@@ -6,35 +6,41 @@ import {
   encodeSelector,
   Selector,
   StoredU256,
-  StoredString,
   StoredBoolean,
   StoredU64,
+  StoredAddress,
   OP_NET,
   NetEvent,
+  Revert,
 } from '@btc-vision/btc-runtime/runtime';
 import { u256 } from '@btc-vision/as-bignum/assembly';
+
+/* ───────────────── STORAGE ───────────────── */
 
 const PTR_OWNER: u16     = 1;
 const PTR_COUNT: u16     = 2;
 const PTR_FEE: u16       = 3;
-const PTR_QUESTION: u16  = 10;
-const PTR_ENDBLOCK: u16  = 11;
-const PTR_YES: u16       = 12;
-const PTR_NO: u16        = 13;
-const PTR_RESOLVED: u16  = 14;
-const PTR_OUTCOME: u16   = 15;
-const PTR_TOTAL: u16     = 16;
+
+const PTR_ENDBLOCK: u16  = 10;
+const PTR_YES: u16       = 11;
+const PTR_NO: u16        = 12;
+const PTR_RESOLVED: u16  = 13;
+const PTR_OUTCOME: u16   = 14;
+const PTR_TOTAL: u16     = 15;
+
 const PTR_BETYES: u16    = 20;
 const PTR_BETNO: u16     = 21;
 const PTR_CLAIMED: u16   = 22;
+const PTR_CLAIMABLE: u16 = 23;
+
+/* ───────────────── EVENTS ───────────────── */
 
 class MarketCreatedEvent extends NetEvent {
-  constructor(id: u64, question: string, endBlock: u64) {
-    const w = new BytesWriter(256);
+  constructor(id: u64, endBlock: u64) {
+    const w = new BytesWriter(16);
     w.writeU64(id);
     w.writeU64(endBlock);
-    w.writeStringWithLength(question);
-    super('MarketCreated', w);
+    super("MarketCreated", w);
   }
 }
 
@@ -44,38 +50,29 @@ class BetPlacedEvent extends NetEvent {
     w.writeU64(id);
     w.writeBoolean(side);
     w.writeU256(amount);
-    super('BetPlaced', w);
+    super("BetPlaced", w);
   }
 }
 
 class ResolvedEvent extends NetEvent {
   constructor(id: u64, outcome: bool) {
-    const w = new BytesWriter(32);
+    const w = new BytesWriter(16);
     w.writeU64(id);
     w.writeBoolean(outcome);
-    super('MarketResolved', w);
+    super("MarketResolved", w);
   }
 }
 
 class ClaimedEvent extends NetEvent {
   constructor(id: u64, amount: u256) {
-    const w = new BytesWriter(64);
+    const w = new BytesWriter(40);
     w.writeU64(id);
     w.writeU256(amount);
-    super('Claimed', w);
+    super("Claimed", w);
   }
 }
 
-const ROOT: u256 = u256.Zero;
-
-function getU256(ptr: u16, sub: u256): u256 { return new StoredU256(ptr, u256.Zero).getWithSub(sub); }
-function setU256(ptr: u16, sub: u256, v: u256): void { new StoredU256(ptr, u256.Zero).setWithSub(sub, v); }
-function getU64(ptr: u16, sub: u256): u64 { return new StoredU64(ptr, 0).getWithSub(sub); }
-function setU64(ptr: u16, sub: u256, v: u64): void { new StoredU64(ptr, 0).setWithSub(sub, v); }
-function getBool(ptr: u16, sub: u256): bool { return new StoredBoolean(ptr, false).getWithSub(sub); }
-function setBool(ptr: u16, sub: u256, v: bool): void { new StoredBoolean(ptr, false).setWithSub(sub, v); }
-function getStr(ptr: u16, sub: u256): string { return new StoredString(ptr, '').getWithSub(sub); }
-function setStr(ptr: u16, sub: u256, v: string): void { new StoredString(ptr, '').setWithSub(sub, v); }
+/* ───────────────── CONTRACT ───────────────── */
 
 @final
 export class OneBet extends OP_NET {
@@ -83,96 +80,94 @@ export class OneBet extends OP_NET {
   public constructor() { super(); }
 
   public override onDeployment(_calldata: Calldata): void {
-    const owner = Blockchain.tx.sender.p2tr(Blockchain.network);
-    setStr(PTR_OWNER, ROOT, owner);
-    setU256(PTR_FEE, ROOT, u256.fromU64(200));
-    setU64(PTR_COUNT, ROOT, 0);
+    new StoredAddress(PTR_OWNER).value = Blockchain.tx.sender;
+    new StoredU256(PTR_FEE, u256.Zero).value = u256.fromU64(200); // 2%
+    new StoredU64(PTR_COUNT, 0).value = 0;
   }
 
   public override execute(method: Selector, calldata: Calldata): BytesWriter {
     switch (method) {
-      case encodeSelector('createMarket(string,u64)'): return this.createMarket(calldata);
-      case encodeSelector('placeBet(u64,bool)'):       return this.placeBet(calldata);
-      case encodeSelector('resolveMarket(u64,bool)'):  return this.resolveMarket(calldata);
-      case encodeSelector('claimWinnings(u64)'):       return this.claimWinnings(calldata);
-      case encodeSelector('getMarket(u64)'):           return this.getMarket(calldata);
-      case encodeSelector('getUserBet(u64)'):          return this.getUserBet(calldata);
-      case encodeSelector('getMarketCount()'):         return this.getMarketCount();
-      default: return super.execute(method, calldata);
+      case encodeSelector("createMarket(u64)"): return this.createMarket(calldata);
+      case encodeSelector("placeBet(u64,bool)"): return this.placeBet(calldata);
+      case encodeSelector("resolveMarket(u64,bool)"): return this.resolveMarket(calldata);
+      case encodeSelector("claimWinnings(u64)"): return this.claimWinnings(calldata);
+      case encodeSelector("withdraw()"): return this.withdraw();
+      default: throw new Revert("Unknown method");
     }
   }
 
-  private createMarket(calldata: Calldata): BytesWriter {
-    const question = calldata.readStringWithLength();
-    const dur: u64 = calldata.readU64();
+  /* ───────── CREATE MARKET ───────── */
 
-    const id: u64 = getU64(PTR_COUNT, ROOT);
-    const end: u64 = Blockchain.blockNumber + dur;
+  private createMarket(calldata: Calldata): BytesWriter {
+    const duration = calldata.readU64();
+    const id = new StoredU64(PTR_COUNT, 0).value;
+    const end = Blockchain.blockNumber + duration;
+
     const sub = u256.fromU64(id);
 
-    setStr(PTR_QUESTION, sub, question);
-    setU64(PTR_ENDBLOCK, sub, end);
-    setU256(PTR_YES, sub, u256.Zero);
-    setU256(PTR_NO, sub, u256.Zero);
-    setBool(PTR_RESOLVED, sub, false);
-    setBool(PTR_OUTCOME, sub, false);
-    setU256(PTR_TOTAL, sub, u256.Zero);
+    new StoredU64(PTR_ENDBLOCK, 0).setWithSub(sub, end);
+    new StoredU256(PTR_YES, u256.Zero).setWithSub(sub, u256.Zero);
+    new StoredU256(PTR_NO, u256.Zero).setWithSub(sub, u256.Zero);
+    new StoredBoolean(PTR_RESOLVED, false).setWithSub(sub, false);
+    new StoredU256(PTR_TOTAL, u256.Zero).setWithSub(sub, u256.Zero);
 
-    setU64(PTR_COUNT, ROOT, id + 1);
+    new StoredU64(PTR_COUNT, 0).value = id + 1;
 
-    this.emitEvent(new MarketCreatedEvent(id, question, end));
+    this.emitEvent(new MarketCreatedEvent(id, end));
 
     const w = new BytesWriter(8);
     w.writeU64(id);
     return w;
   }
 
-  private placeBet(calldata: Calldata): BytesWriter {
-    const id: u64 = calldata.readU64();
-    const side: bool = calldata.readBoolean();
-    const amt: u256 = Blockchain.tx.callValue;
+  /* ───────── PLACE BET ───────── */
 
-    if (u256.eq(amt, u256.Zero)) throw new Error('Send BTC');
+  private placeBet(calldata: Calldata): BytesWriter {
+    const id = calldata.readU64();
+    const side = calldata.readBoolean();
+    const amount = Blockchain.tx.callValue;
+
+    if (u256.eq(amount, u256.Zero))
+      throw new Revert("Send BTC");
 
     const sub = u256.fromU64(id);
+    const end = new StoredU64(PTR_ENDBLOCK, 0).getWithSub(sub);
 
-    if (id >= getU64(PTR_COUNT, ROOT)) throw new Error("Market not found");
-    if (Blockchain.blockNumber >= getU64(PTR_ENDBLOCK, sub)) throw new Error('Closed');
-    if (getBool(PTR_RESOLVED, sub)) throw new Error('Resolved');
+    if (Blockchain.blockNumber >= end)
+      throw new Revert("Closed");
 
-    const usub = this.userSub(id);
+    const userKey = this.userKey(id);
 
     if (side) {
-      setU256(PTR_YES, sub, u256.add(getU256(PTR_YES, sub), amt));
-      setU256(PTR_BETYES, usub, u256.add(getU256(PTR_BETYES, usub), amt));
+      this.addToPool(PTR_YES, sub, amount);
+      this.addToPool(PTR_BETYES, userKey, amount);
     } else {
-      setU256(PTR_NO, sub, u256.add(getU256(PTR_NO, sub), amt));
-      setU256(PTR_BETNO, usub, u256.add(getU256(PTR_BETNO, usub), amt));
+      this.addToPool(PTR_NO, sub, amount);
+      this.addToPool(PTR_BETNO, userKey, amount);
     }
 
-    setU256(PTR_TOTAL, sub, u256.add(getU256(PTR_TOTAL, sub), amt));
+    this.addToPool(PTR_TOTAL, sub, amount);
 
-    this.emitEvent(new BetPlacedEvent(id, side, amt));
+    this.emitEvent(new BetPlacedEvent(id, side, amount));
 
     const w = new BytesWriter(1);
     w.writeBoolean(true);
     return w;
   }
 
-  private resolveMarket(calldata: Calldata): BytesWriter {
-    if (Blockchain.tx.sender.p2tr(Blockchain.network) !== getStr(PTR_OWNER, ROOT))
-      throw new Error('Not owner');
+  /* ───────── RESOLVE ───────── */
 
-    const id: u64 = calldata.readU64();
+  private resolveMarket(calldata: Calldata): BytesWriter {
+    const owner = new StoredAddress(PTR_OWNER).value;
+    if (Blockchain.tx.sender != owner)
+      throw new Revert("Not owner");
+
+    const id = calldata.readU64();
     const outcome = calldata.readBoolean();
     const sub = u256.fromU64(id);
 
-    if (id >= getU64(PTR_COUNT, ROOT)) throw new Error("Market not found");
-    if (Blockchain.blockNumber < getU64(PTR_ENDBLOCK, sub)) throw new Error("Not ended");
-    if (getBool(PTR_RESOLVED, sub)) throw new Error('Already resolved');
-
-    setBool(PTR_RESOLVED, sub, true);
-    setBool(PTR_OUTCOME, sub, outcome);
+    new StoredBoolean(PTR_RESOLVED, false).setWithSub(sub, true);
+    new StoredBoolean(PTR_OUTCOME, false).setWithSub(sub, outcome);
 
     this.emitEvent(new ResolvedEvent(id, outcome));
 
@@ -181,35 +176,44 @@ export class OneBet extends OP_NET {
     return w;
   }
 
+  /* ───────── CLAIM ───────── */
+
   private claimWinnings(calldata: Calldata): BytesWriter {
-    const id: u64 = calldata.readU64();
+    const id = calldata.readU64();
     const sub = u256.fromU64(id);
 
-    if (!getBool(PTR_RESOLVED, sub)) throw new Error('Not resolved');
+    if (!new StoredBoolean(PTR_RESOLVED, false).getWithSub(sub))
+      throw new Revert("Not resolved");
 
-    const outcome = getBool(PTR_OUTCOME, sub);
-    const usub = this.userSub(id);
+    const outcome = new StoredBoolean(PTR_OUTCOME, false).getWithSub(sub);
+    const userKey = this.userKey(id);
 
-    if (getBool(PTR_CLAIMED, usub)) throw new Error('Claimed');
+    if (new StoredBoolean(PTR_CLAIMED, false).getWithSub(userKey))
+      throw new Revert("Already claimed");
 
     const betPtr = outcome ? PTR_BETYES : PTR_BETNO;
     const poolPtr = outcome ? PTR_YES : PTR_NO;
 
-    const bet = getU256(betPtr, usub);
-    if (u256.eq(bet, u256.Zero)) throw new Error('No winning bet');
+    const bet = new StoredU256(betPtr, u256.Zero).getWithSub(userKey);
+    const pool = new StoredU256(poolPtr, u256.Zero).getWithSub(sub);
+    const total = new StoredU256(PTR_TOTAL, u256.Zero).getWithSub(sub);
 
-    const pool = getU256(poolPtr, sub);
-    if (u256.eq(pool, u256.Zero)) throw new Error("Empty pool");
-
-    const total = getU256(PTR_TOTAL, sub);
+    if (u256.eq(bet, u256.Zero))
+      throw new Revert("No winning bet");
 
     const gross = u256.div(u256.mul(bet, total), pool);
-    const fee = u256.div(u256.mul(gross, getU256(PTR_FEE, ROOT)), u256.fromU64(10000));
+    const feeRate = new StoredU256(PTR_FEE, u256.Zero).value;
+    const fee = u256.div(u256.mul(gross, feeRate), u256.fromU64(10000));
     const payout = u256.sub(gross, fee);
 
-    setBool(PTR_CLAIMED, usub, true);
-
-    Blockchain.transfer(Blockchain.tx.sender, payout);
+    new StoredBoolean(PTR_CLAIMED, false).setWithSub(userKey, true);
+    new StoredU256(PTR_CLAIMABLE, u256.Zero)
+      .setWithSub(userKey,
+        u256.add(
+          new StoredU256(PTR_CLAIMABLE, u256.Zero).getWithSub(userKey),
+          payout
+        )
+      );
 
     this.emitEvent(new ClaimedEvent(id, payout));
 
@@ -218,44 +222,33 @@ export class OneBet extends OP_NET {
     return w;
   }
 
-  private getMarket(calldata: Calldata): BytesWriter {
-    const id: u64 = calldata.readU64();
-    const sub = u256.fromU64(id);
+  /* ───────── WITHDRAW ───────── */
 
-    const w = new BytesWriter(300);
-    w.writeStringWithLength(getStr(PTR_QUESTION, sub));
-    w.writeU64(getU64(PTR_ENDBLOCK, sub));
-    w.writeU256(getU256(PTR_YES, sub));
-    w.writeU256(getU256(PTR_NO, sub));
-    w.writeBoolean(getBool(PTR_RESOLVED, sub));
-    w.writeBoolean(getBool(PTR_OUTCOME, sub));
-    w.writeU256(getU256(PTR_TOTAL, sub));
+  private withdraw(): BytesWriter {
+    const user = Blockchain.tx.sender.toU256();
+    const amount = new StoredU256(PTR_CLAIMABLE, u256.Zero).getWithSub(user);
 
+    if (u256.eq(amount, u256.Zero))
+      throw new Revert("Nothing to withdraw");
+
+    new StoredU256(PTR_CLAIMABLE, u256.Zero).setWithSub(user, u256.Zero);
+
+    const w = new BytesWriter(32);
+    w.writeU256(amount);
     return w;
   }
 
-  private getUserBet(calldata: Calldata): BytesWriter {
-    const id: u64 = calldata.readU64();
-    const usub = this.userSub(id);
+  /* ───────── HELPERS ───────── */
 
-    const w = new BytesWriter(65);
-    w.writeU256(getU256(PTR_BETYES, usub));
-    w.writeU256(getU256(PTR_BETNO, usub));
-    w.writeBoolean(getBool(PTR_CLAIMED, usub));
-
-    return w;
+  private userKey(id: u64): u256 {
+    return u256.add(
+      Blockchain.tx.sender.toU256(),
+      u256.fromU64(id)
+    );
   }
 
-  private getMarketCount(): BytesWriter {
-    const w = new BytesWriter(8);
-    w.writeU64(getU64(PTR_COUNT, ROOT));
-    return w;
+  private addToPool(ptr: u16, sub: u256, amt: u256): void {
+    const s = new StoredU256(ptr, u256.Zero);
+    s.setWithSub(sub, u256.add(s.getWithSub(sub), amt));
   }
-
-  private userSub(id: u64): u256 {
-    const w = new BytesWriter(64);
-    w.writeAddress(Blockchain.tx.sender.p2tr(Blockchain.network));
-    w.writeU64(id);
-    return Blockchain.keccak256(w.getBuffer());
-  }
-}
+      }
