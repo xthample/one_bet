@@ -6,7 +6,7 @@
 export const NETWORKS = {
   testnet: {
     name: 'BTC Testnet3',
-    rpc: 'https://api-testnet.opnet.org',
+    rpc: 'https://testnet.opnet.org',
     chainId: 'testnet',
   },
   mainnet: {
@@ -15,7 +15,6 @@ export const NETWORKS = {
     chainId: 'mainnet',
   },
 };
-
 // MUST SET IN .env
 export const CONTRACT_ADDRESS =
   import.meta.env.VITE_CONTRACT_ADDRESS;
