@@ -1,10 +1,9 @@
 {
   "name": "onebet-contract",
   "version": "1.0.0",
-  "description": "OneBet Prediction Market Smart Contract for OP_NET Bitcoin L1",
   "scripts": {
-    "build": "npx asc src/index.ts --target release --runtime minimal --noExportRuntime --noExportStart",
-    "build:debug": "npx asc src/index.ts --target debug --runtime minimal --noExportRuntime --noExportStart"
+    "build": "npx asc src/index.ts --target release",
+    "build:debug": "npx asc src/index.ts --target debug"
   },
   "dependencies": {
     "@btc-vision/btc-runtime": "1.10.12"
