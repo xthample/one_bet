@@ -16,7 +16,6 @@
   "options": {
     "exportRuntime": true,
     "exportStart": true,
-    "runtime": "stub",
     "use": ["abort="]
   }
 }
