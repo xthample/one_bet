@@ -1,0 +1,22 @@
+{
+  "targets": {
+    "debug": {
+      "outFile": "build/OneBet.debug.wasm",
+      "sourceMap": true,
+      "debug": true
+    },
+    "release": {
+      "outFile": "build/OneBet.wasm",
+      "sourceMap": false,
+      "optimizeLevel": 3,
+      "shrinkLevel": 1,
+      "noAssert": false
+    }
+  },
+  "options": {
+    "exportRuntime": true,
+    "exportStart": true,
+    "runtime": "stub",
+    "use": ["abort="]
+  }
+}
